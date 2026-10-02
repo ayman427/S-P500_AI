@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from dashboard_server import _project_python
+from vercel_app import app as vercel_app
 from sp500_ml import (
     FUNDAMENTAL_FEATURES,
     FEATURES,
@@ -66,6 +67,19 @@ def make_prices(dates: pd.DatetimeIndex, start: float) -> pd.DataFrame:
 
 
 class BuildFeaturesTests(unittest.TestCase):
+    def test_vercel_asgi_entrypoint_exports_dashboard_routes(self) -> None:
+        route_paths = {route.path for route in vercel_app.routes}
+
+        self.assertTrue({"/api/state", "/api/quote", "/api/action/{action}"}.issubset(route_paths))
+
+        config = json.loads(
+            (Path(__file__).resolve().parents[1] / "vercel.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(config["services"]["app"]["entrypoint"], "vercel_app:app")
+        self.assertEqual(config["rewrites"][-1]["destination"]["service"], "frontend")
+
     def test_extract_ticker_uses_deterministic_column_order(self) -> None:
         dates = pd.date_range("2024-01-02", periods=3)
         # Build the raw download with columns in a shuffled, non-alphabetical order.

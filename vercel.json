@@ -3,7 +3,8 @@
   "services": {
     "app": {
       "root": ".",
-      "runtime": "python"
+      "runtime": "python",
+      "entrypoint": "vercel_app:app"
     },
     "frontend": {
       "root": "frontend",
@@ -12,9 +13,21 @@
   },
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/api",
       "destination": {
         "service": "app"
+      }
+    },
+    {
+      "source": "/api/(.*)",
+      "destination": {
+        "service": "app"
+      }
+    },
+    {
+      "source": "/(.*)",
+      "destination": {
+        "service": "frontend"
       }
     }
   ]

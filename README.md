@@ -34,6 +34,10 @@ node frontend/node_modules/vite/bin/vite.js frontend --host 127.0.0.1 --port 517
 
 Open `http://127.0.0.1:5173`. The dashboard reads local project data and exposes explicit price-sync, train, and paper-signal actions. It is bound to localhost and does not place orders.
 
+## Vercel
+
+`vercel.json` routes `/api/*` to the FastAPI ASGI entrypoint `vercel_app:app` and all other paths to the Vite frontend service. The Python service is serverless: the current price history, model files, and paper ledgers are local/ephemeral files and are excluded from Git. For durable deployed training and paper trading, configure persistent external storage before relying on those actions; the local dashboard server remains the supported persistent workflow.
+
 ## Run
 
 ```powershell

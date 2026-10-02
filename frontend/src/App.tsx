@@ -229,7 +229,9 @@ function App() {
         );
         const payload = await response.json();
         if (!response.ok)
-          throw new Error(payload.error || "Could not load workspace data.");
+          throw new Error(
+            payload.error || payload.detail || "Could not load workspace data.",
+          );
         setData(payload as DashboardState);
         setError("");
         if (
@@ -329,7 +331,8 @@ function App() {
         }),
       });
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Action failed.");
+      if (!response.ok)
+        throw new Error(payload.error || payload.detail || "Action failed.");
       setNotice(
         action === "update"
           ? "Price data updated"
