@@ -11,6 +11,8 @@ class CloudDataTests(unittest.TestCase):
         self.cache = patch.object(cloud_data, "_cache", cloud_data.OrderedDict())
         self.cache.start()
         self.addCleanup(self.cache.stop)
+        meta_cache = patch.object(cloud_data, "_metadata_cache", cloud_data.OrderedDict())
+        meta_cache.start(); self.addCleanup(meta_cache.stop)
         self.size = patch.object(cloud_data, "_cache_size", 0)
         self.size.start()
         self.addCleanup(self.size.stop)
@@ -27,6 +29,64 @@ class CloudDataTests(unittest.TestCase):
             self.assertEqual(cloud_data.read_bytes("prices/AAA.csv"), content)
             self.assertEqual(cloud_data.read_bytes("prices/AAA.csv"), content)
             get.assert_called_once()
+
+    def test_compressed_cache_fits_multiple_large_files_with_a_small_memory_budget(self):
+        first, second = b"a" * 50000, b"b" * 50000
+        packed1, meta1 = self.metadata(first)
+        packed2, meta2 = self.metadata(second)
+        with patch.object(cloud_data, "_MAX_CACHE", len(packed1)+len(packed2)), patch.object(cloud_data.requests, "get", side_effect=[Mock(content=packed1), Mock(content=packed2)]) as get:
+            self.assertEqual(cloud_data.read_bytes("prices/A.csv", meta1), first)
+            self.assertEqual(cloud_data.read_bytes("prices/B.csv", meta2), second)
+            self.assertEqual(cloud_data.read_bytes("prices/A.csv", meta1), first)
+            self.assertEqual(get.call_count, 2)
+            self.assertEqual(cloud_data._cache_size, len(packed1)+len(packed2))
+
+    def test_concurrent_readers_share_one_download(self):
+        from concurrent.futures import ThreadPoolExecutor
+        content = b"shared verified content"
+        compressed, meta = self.metadata(content)
+        with patch.object(cloud_data.requests, "get", return_value=Mock(content=compressed)) as get, ThreadPoolExecutor(max_workers=5) as pool:
+            self.assertEqual(list(pool.map(lambda _: cloud_data.read_bytes("prices/A.csv", meta), range(5))), [content]*5)
+            get.assert_called_once()
+
+    def test_metadata_expires_and_is_scoped_to_deployment(self):
+        with patch("sp500_ml.prediction_store.load_environment"), patch.object(cloud_data, "rpc", return_value={"version":1}) as rpc, patch.object(cloud_data.time, "monotonic", return_value=100):
+            self.assertEqual(cloud_data.metadata("prices/A.csv"), {"version":1})
+            cloud_data.metadata("prices/A.csv")
+            rpc.assert_called_once()
+        with patch("sp500_ml.prediction_store.load_environment"), patch.object(cloud_data, "rpc", return_value={"version":2}) as rpc, patch.object(cloud_data.time, "monotonic", return_value=111):
+            self.assertEqual(cloud_data.metadata("prices/A.csv"), {"version":2})
+            rpc.assert_called_once()
+
+    def test_upload_is_reused_only_after_confirmed_commit(self):
+        content = b"just uploaded"
+        _, meta = self.metadata(content)
+        with patch.object(cloud_data, "metadata", return_value=None), patch.object(cloud_data, "rpc", side_effect=["https://upload.example", {"version":1}]), patch.object(cloud_data.requests, "post", return_value=Mock(json=lambda:{"storageId":"file"})), patch.object(cloud_data.requests,"get") as get:
+            cloud_data.write_bytes("prices/A.csv", content)
+            self.assertEqual(cloud_data.read_bytes("prices/A.csv", meta), content)
+            get.assert_not_called()
+        cloud_data._cache.clear(); cloud_data._cache_size = 0
+        with patch.object(cloud_data, "metadata", return_value=None), patch.object(cloud_data, "rpc", side_effect=["https://upload.example", RuntimeError("Conflict")]), patch.object(cloud_data.requests, "post", return_value=Mock(json=lambda:{"storageId":"file"})):
+            with self.assertRaises(RuntimeError): cloud_data.write_bytes("prices/A.csv", content)
+            self.assertFalse(cloud_data._cache)
+
+    def test_writes_bypass_old_metadata_and_keep_optimistic_version_checks(self):
+        old = {"version":1,"contentSha256":"old"}
+        newer = {"version":2,"contentSha256":"other"}
+        with patch("sp500_ml.prediction_store.load_environment"), patch.object(cloud_data, "rpc", side_effect=[old,newer,"https://upload.example",{"version":3}]) as rpc, patch.object(cloud_data.requests,"post",return_value=Mock(json=lambda:{"storageId":"file"})):
+            cloud_data.metadata("prices/A.csv")
+            cloud_data.write_bytes("prices/A.csv", b"new content")
+            self.assertEqual(rpc.call_args.args[2]["expectedVersion"], 2)
+            self.assertNotIn(cloud_data._metadata_key("prices/A.csv"), cloud_data._metadata_cache)
+
+    def test_daily_replacements_retire_old_cache_versions(self):
+        old = b"old history" * 1000
+        compressed, meta = self.metadata(old)
+        cloud_data._remember_content(meta["contentSha256"], compressed)
+        with patch.object(cloud_data, "metadata", return_value={**meta,"version":1}), patch.object(cloud_data, "rpc", side_effect=["https://upload.example",{"version":2}]), patch.object(cloud_data.requests,"post",return_value=Mock(json=lambda:{"storageId":"file"})):
+            cloud_data.write_bytes("prices/A.csv", b"updated history"*1000)
+        self.assertNotIn(meta["contentSha256"], cloud_data._cache)
+        self.assertEqual(cloud_data._cache_size, sum(len(v) for v in cloud_data._cache.values()))
 
     def test_corrupted_download_is_not_cached(self):
         packed, meta = self.metadata(b"valid")

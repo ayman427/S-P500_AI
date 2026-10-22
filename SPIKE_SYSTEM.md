@@ -30,3 +30,14 @@ History selector, spike selector, interactive price/volume chart, short summary 
 ## Limits
 
 Unusual trading is not proof of manipulation, nor a recommendation to trade. Daily closes miss intraday movements. Volume is provider-reported and can be distorted across corporate actions. Market comparison does not account for sector-specific or beta effects. Baseline/future-price invariance, missing-data behaviour, market-wide moves, counts and UI are tested; future reversal prediction has not been validated.
+
+
+## Offline chronological audit
+
+Run `python -m sp500_ml.anomaly_evaluation` to evaluate the fixed primary multi-signal rule on a preselected, nonrandom 12-company sample (AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, XOM, JNJ, PG, WMT, CAT). Rules, source-code hash, sample and split are written to a new Convex run before reading outcomes. Default split: development before 2022-01-01 and chronological holdout from that date. Outcomes crossing the split are purged. Within each company, retain the earliest eligible non-overlapping event windows. Every baseline uses the same complete-input cohort.
+
+The primary rule is unchanged: at least two additional elevated signals beyond the price anomaly. Volume-only, market-only and acceleration-only ablations are exploratory. Report true positives, false alerts, missed reversals, precision, recall and false-positive rates within the spike universe. Wilson intervals are approximate; primary precision lift against the all-price-spike baseline additionally uses 2,000 paired calendar-quarter block bootstrap resamples (seed 42), retaining contemporaneous cross-company groups. Positive descriptive lift requires an interval above zero, at least 30 flags, 100 eligible holdout events and eight populated quarters; it never enables a production risk score.
+
+Artifacts are `backtests/anomaly_evaluation/<run-id>/protocol.json`, `events.json` and `report.json` in Convex, not local folders. Event records contain measurements and outcomes; report coverage records identify price-history hashes, data dates and every exclusion. Report/events are read back and verified after publication. Failures remain explicit and force an incomplete-coverage conclusion. Forecast models and UI are never changed.
+
+The script independently recalculates stock-return and volume arithmetic for one development and one holdout example per supported company (up to 24 examples). These are automated checks, not manual verification against a second vendor. Historical data was explored previously: the chronological holdout is an audit partition, not a guarantee of never-seen data. A fresh prospective period is needed for stronger confirmation. No thresholds should be retuned against this report and then described as independently validated.

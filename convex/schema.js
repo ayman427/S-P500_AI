@@ -74,7 +74,21 @@ export const marketScanFields = {
     status: v.union(v.literal("stale"), v.literal("incomplete"), v.literal("watch"), v.literal("no_signal")), met: v.number(),
     checks: v.array(v.object({id: v.string(), status: v.union(v.literal("met"), v.literal("not_met"), v.literal("unknown")), value: v.union(v.number(), v.null())}))})),
 };
+export const anomalyObservationFields = {
+  key: v.string(), protocol: v.string(), protocolHash: v.string(), ticker: v.string(), eventDate: v.string(),
+  closeAt: v.number(), nextOpenAt: v.number(), dueDate: v.string(), dueAt: v.number(),
+  eventClose: v.number(), inputSnapshot: v.string(), inputSha256: v.string(),
+  signals: v.array(v.object({id: v.string(), value: v.union(v.number(), v.null()), threshold: v.union(v.number(), v.null()), status: v.string()})),
+  flagged: v.union(v.boolean(), v.null()),
+};
 export default defineSchema({
+  anomalyTrackingChecks: defineTable({key:v.string(),protocol:v.string(),ticker:v.string(),session:v.string(),status:v.string(),checkedAt:v.number()}).index("by_key",["key"]),
+  anomalyProtocols: defineTable({key: v.string(), hash: v.string(), spec: v.string(), frozenAt: v.number()}).index("by_key", ["key"]),
+  anomalyObservations: defineTable({...anomalyObservationFields, observedAt: v.number(),
+    status: v.union(v.literal("pending"), v.literal("settled")), settledAt: v.optional(v.number()),
+    outcomeSnapshot: v.optional(v.string()), outcomeSha256: v.optional(v.string()),
+    return20: v.optional(v.number()), largestDecline: v.optional(v.number()), reversal: v.optional(v.boolean()),
+  }).index("by_key", ["key"]).index("by_due", ["status", "dueAt"]),
   marketScans: defineTable({key: v.string(), scan: v.object(marketScanFields)}).index("by_key", ["key"]),
   insiderTransactions: defineTable(insiderTransactionFields).index("by_key", ["key"]).index("by_ticker_accepted", ["ticker", "acceptedAt"]),
   spikeWatch: defineTable(spikeWatchFields).index("by_key", ["key"]).index("by_ticker", ["ticker"]),

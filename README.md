@@ -458,3 +458,11 @@ a new trial and can use additional quota. Headlines are not full article content
 topic matches do not establish causes, and these records are excluded from training.
 The trial is separate from automatic frontend research until coverage is evaluated.
 
+
+### Fixed-signal audit
+
+`python -m sp500_ml.anomaly_evaluation` compares the unchanged Rise investigation signals against price-spike and single-signal baselines, with a purged chronological development/holdout split. It stores an isolated protocol, event dataset and report in Convex under `backtests/anomaly_evaluation/<run-id>/`. No forecasting model or UI is changed. This is a historical audit, not proof of future predictive value. See [SPIKE_SYSTEM.md](SPIKE_SYSTEM.md).
+
+### Convex usage
+
+See [CONVEX_USAGE.md](CONVEX_USAGE.md) for RAM-only compressed caching, scan batching and polling limits. Restart the backend after updating. These controls reduce future egress and database I/O; they do not reset existing usage or delete saved records.

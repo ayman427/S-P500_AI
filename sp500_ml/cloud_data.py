@@ -26,7 +26,10 @@ import requests
 _cache = OrderedDict()
 _cache_size = 0
 _cache_lock = threading.RLock()
-_MAX_CACHE = 32 * 1024 * 1024
+_MAX_CACHE = 128 * 1024 * 1024  # Compressed bytes, RAM only.
+_metadata_cache = OrderedDict()
+_METADATA_TTL = 10
+_download_locks = [threading.Lock() for _ in range(32)]
 _lease = ContextVar("cloud_operation_lease", default=None)
 
 
@@ -45,8 +48,31 @@ def rpc(kind, function, args):
     return result["value"]
 
 
+def _metadata_key(key):
+    return (os.environ.get("CONVEX_URL"), os.environ.get("PREDICTION_STORE_SECRET"), key)
+
+
+def _invalidate_metadata(key):
+    with _cache_lock:
+        _metadata_cache.pop(_metadata_key(key), None)
+
+
 def metadata(key):
-    return rpc("query", "get", {"key": key})
+    from .prediction_store import load_environment
+    load_environment()
+    identity = _metadata_key(key)
+    with _cache_lock:
+        cached = _metadata_cache.get(identity)
+        if cached and time.monotonic() - cached[0] < _METADATA_TTL:
+            return dict(cached[1])
+    value = rpc("query", "get", {"key": key})
+    if value is not None:
+        with _cache_lock:
+            _metadata_cache[identity] = (time.monotonic(), dict(value))
+            _metadata_cache.move_to_end(identity)
+            while len(_metadata_cache) > 4096:
+                _metadata_cache.popitem(last=False)
+    return value
 
 
 def list_datasets(prefix=""):
@@ -74,35 +100,45 @@ def list_datasets(prefix=""):
     return rows
 
 
-def read_bytes(key, meta=None):
+def _remember_content(digest, packed):
     global _cache_size
+    with _cache_lock:
+        if digest not in _cache and len(packed) <= _MAX_CACHE:
+            _cache[digest] = packed
+            _cache_size += len(packed)
+            while _cache_size > _MAX_CACHE:
+                _, previous = _cache.popitem(last=False)
+                _cache_size -= len(previous)
+
+
+def read_bytes(key, meta=None):
     meta = metadata(key) if meta is None else meta
     if meta is None:
         raise FileNotFoundError(f"No Convex dataset: {key}")
     digest = meta["contentSha256"]
-    with _cache_lock:
-        if digest in _cache:
-            _cache.move_to_end(digest)
-            return _cache[digest]
-    response = requests.get(meta["url"], timeout=90)
-    response.raise_for_status()
-    packed = response.content
-    if hashlib.sha256(packed).hexdigest() != meta["sha256"]:
-        raise RuntimeError(f"Convex upload integrity failed: {key}")
-    content = gzip.decompress(packed)
-    if len(content) != meta["size"] or hashlib.sha256(content).hexdigest() != digest:
-        raise RuntimeError(f"Convex data integrity failed: {key}")
-    with _cache_lock:
-        if digest not in _cache and len(content) <= _MAX_CACHE:
-            _cache[digest] = content
-            _cache_size += len(content)
-            while _cache_size > _MAX_CACHE:
-                _, previous = _cache.popitem(last=False)
-                _cache_size -= len(previous)
-    return content
+    # Concurrent stock/model requests share one verified download per content hash.
+    with _download_locks[hash(digest) % len(_download_locks)]:
+        with _cache_lock:
+            cached = _cache.get(digest)
+            if cached is not None:
+                _cache.move_to_end(digest)
+        if cached is not None:
+            return gzip.decompress(cached)
+        response = requests.get(meta["url"], timeout=90)
+        response.raise_for_status()
+        packed = response.content
+        if hashlib.sha256(packed).hexdigest() != meta["sha256"]:
+            raise RuntimeError(f"Convex upload integrity failed: {key}")
+        content = gzip.decompress(packed)
+        if len(content) != meta["size"] or hashlib.sha256(content).hexdigest() != digest:
+            raise RuntimeError(f"Convex data integrity failed: {key}")
+        _remember_content(digest, packed)
+        return content
 
 
 def write_bytes(key, content, modified_at=None):
+    # Optimistic writes always need fresh metadata, never a cached version.
+    _invalidate_metadata(key)
     current = metadata(key)
     digest = hashlib.sha256(content).hexdigest()
     if current and current["contentSha256"] == digest:
@@ -111,11 +147,24 @@ def write_bytes(key, content, modified_at=None):
     upload = rpc("mutation", "uploadUrl", {})
     response = requests.post(upload, data=packed, headers={"Content-Type": "application/gzip"}, timeout=120)
     response.raise_for_status()
-    return rpc("mutation", "commit", {"key": key, "storageId": response.json()["storageId"],
+    try:
+        committed = rpc("mutation", "commit", {"key": key, "storageId": response.json()["storageId"],
         "sha256": hashlib.sha256(packed).hexdigest(), "contentSha256": digest, "size": len(content),
         "modifiedAt": (time.time() if modified_at is None else modified_at) * 1000,
         "expectedVersion": current["version"] if current else None,
         **({"lease": _lease.get()} if _lease.get() else {})})
+    finally:
+        _invalidate_metadata(key)
+    # Retire superseded versions so daily updates cannot evict the next stock's live history.
+    if current and current["contentSha256"] != digest:
+        global _cache_size
+        with _cache_lock:
+            old = _cache.pop(current["contentSha256"], None)
+            if old is not None:
+                _cache_size -= len(old)
+    # commit validates the uploaded compressed checksum before confirming publication.
+    _remember_content(digest, packed)
+    return committed
 
 
 @contextmanager

@@ -19,6 +19,8 @@ export default function MarketWatch() {
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     async function poll(first: boolean) {
+      if (controller.signal.aborted) return;
+      if (document.hidden) {timer = setTimeout(() => void poll(first), 60000); return;}
       try {
         let data = await stockResponse(await apiFetch("/api/market-watch", {signal: controller.signal})) as Payload;
         if (!controller.signal.aborted) {setPayload(data); setError("");}
@@ -27,11 +29,11 @@ export default function MarketWatch() {
             {method: "POST", signal: controller.signal})) as Payload;
           if (!controller.signal.aborted) setPayload(data);
         }
-        if (!controller.signal.aborted) timer = setTimeout(() => void poll(false), data.scan?.complete ? 60000 : 5000);
+        if (!controller.signal.aborted) timer = setTimeout(() => void poll(false), data.scan?.complete ? 300000 : 15000);
       } catch (reason) {
         if (!controller.signal.aborted) {
           setError(reason instanceof Error ? reason.message : "Could not load the market checklist.");
-          timer = setTimeout(() => void poll(false), 30000);
+          timer = setTimeout(() => void poll(false), 60000);
         }
       }
     }

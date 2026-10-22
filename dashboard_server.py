@@ -618,6 +618,8 @@ def main() -> None:
         threading.Thread(target=worker, daemon=True, name="prediction-comparison").start()
         from sp500_ml.market_watch import worker as market_worker
         threading.Thread(target=market_worker, daemon=True, name="market-checklist").start()
+        from sp500_ml.anomaly_tracking import worker as anomaly_worker
+        threading.Thread(target=anomaly_worker, daemon=True, name="rise-prospective").start()
     print(f"Dashboard API listening on http://127.0.0.1:{PORT}")
     try:
         server.serve_forever()

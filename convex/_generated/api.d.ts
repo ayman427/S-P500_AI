@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as anomalyTracking from "../anomalyTracking.js";
 import type * as datasets from "../datasets.js";
 import type * as insiderTransactions from "../insiderTransactions.js";
 import type * as marketWatch from "../marketWatch.js";
@@ -22,6 +23,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  anomalyTracking: typeof anomalyTracking;
   datasets: typeof datasets;
   insiderTransactions: typeof insiderTransactions;
   marketWatch: typeof marketWatch;
