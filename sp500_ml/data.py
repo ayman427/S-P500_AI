@@ -1,16 +1,18 @@
-"""Price history download, local storage, and adjustment-drift detection."""
+"""Price history download, Convex storage, and adjustment-drift detection."""
 from __future__ import annotations
 
 import re
+import json
 import os
 from io import StringIO
 from pathlib import Path
-from datetime import time as dt_time
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from .cloud_data import read_csv
+from .cloud_data import RemotePath, write_csv
 import requests
 import yfinance as yf
 
@@ -21,6 +23,23 @@ BATCH_SIZE = 25
 FULL_REFRESH_INTERVAL_DAYS = 180
 PRICE_COLUMN_ORDER = ["Open", "High", "Low", "Close", "Volume"]
 PRICE_COLUMNS = set(PRICE_COLUMN_ORDER)
+
+# Sector ETF mapping for S&P 500 sectors
+SECTOR_ETFS = {
+    "XLK": "Technology",
+    "XLF": "Financials",
+    "XLV": "Health Care",
+    "XLE": "Energy",
+    "XLI": "Industrials",
+    "XLP": "Consumer Staples",
+    "XLY": "Consumer Discretionary",
+    "XLB": "Materials",
+    "XLU": "Utilities",
+    "XLRE": "Real Estate",
+    "XLC": "Communication Services",
+}
+
+VIX_TICKER = "^VIX"
 
 
 def get_sp500_tickers() -> list[str]:
@@ -35,6 +54,22 @@ def get_sp500_tickers() -> list[str]:
         StringIO(response.text),
         attrs={"id": "constituents"},
     )
+    if "Security" in tables[0].columns:
+        names = {
+            str(row["Symbol"]).upper().replace(".", "-"): str(row["Security"])
+            for _, row in tables[0].iterrows()
+        }
+        DATA_DIR.parent.mkdir(parents=True, exist_ok=True)
+        path = DATA_DIR.parent / "companies.json"
+        if isinstance(path, RemotePath):
+            path.write_text(json.dumps(names, indent=2))
+            return [str(value).replace(".", "-") for value in tables[0]["Symbol"].drop_duplicates()]
+        temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary.write_text(json.dumps(names, indent=2), encoding="utf-8")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
     return (
         tables[0]["Symbol"]
         .astype(str)
@@ -49,6 +84,9 @@ def _ticker_file(ticker: str) -> Path:
 
 
 def _atomic_write_prices(prices: pd.DataFrame, path: Path) -> None:
+    if isinstance(path, RemotePath):
+        write_csv(prices, path, date_format="%Y-%m-%d", index_label="Date")
+        return
     temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     try:
         prices.to_csv(temporary_path, date_format="%Y-%m-%d")
@@ -63,12 +101,15 @@ def _full_refresh_marker(path: Path) -> Path:
 
 def _record_full_refresh(path: Path, now: pd.Timestamp) -> None:
     marker = _full_refresh_marker(path)
-    temporary_path = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
     current_time = pd.Timestamp(now)
     if current_time.tzinfo is None:
         current_time = current_time.tz_localize("UTC")
     else:
         current_time = current_time.tz_convert("UTC")
+    if isinstance(marker, RemotePath):
+        marker.write_text(current_time.isoformat())
+        return
+    temporary_path = marker.with_name(f".{marker.name}.{uuid4().hex}.tmp")
     try:
         temporary_path.write_text(current_time.isoformat(), encoding="utf-8")
         os.replace(temporary_path, marker)
@@ -86,10 +127,13 @@ def _drop_incomplete_session(
         current_time = current_time.tz_localize(ZoneInfo("America/New_York"))
     else:
         current_time = current_time.tz_convert(ZoneInfo("America/New_York"))
+    from .sessions import _calendar
     today = current_time.normalize().tz_localize(None)
-    if current_time.time() < dt_time(16, 30):
-        return prices.loc[prices.index < today]
-    return prices.loc[prices.index <= today]
+    calendar = _calendar(today.year)
+    session = calendar.date_to_session(today, direction="previous")
+    if current_time < calendar.session_close(session) + pd.Timedelta(minutes=30):
+        session = calendar.previous_session(session)
+    return prices.loc[prices.index <= session]
 
 
 def _full_refresh_due(path: Path, now: pd.Timestamp) -> bool:
@@ -152,7 +196,7 @@ def _download_batch(tickers: list[str], start: str) -> pd.DataFrame:
         group_by="ticker",
         multi_level_index=True,
         progress=False,
-        threads=True,
+        threads=len(tickers) > 1,
     )
 
 
@@ -179,11 +223,16 @@ def _merge_price_history(old: pd.DataFrame, fresh: pd.DataFrame) -> tuple[pd.Dat
 
 
 def _price_files() -> list[Path]:
-    return sorted(DATA_DIR.glob("*.csv")) if DATA_DIR.exists() else []
+    excluded = {"SPY", *SECTOR_ETFS, VIX_TICKER}
+    return (
+        sorted(path for path in DATA_DIR.glob("*.csv") if path.stem not in excluded)
+        if DATA_DIR.exists()
+        else []
+    )
 
 
 def list_tickers() -> None:
-    tickers = [path.stem for path in _price_files() if path.stem != "SPY"]
+    tickers = [path.stem for path in _price_files()]
     if not tickers:
         raise RuntimeError("No local price data. Run `python -m sp500_ml update` first.")
     print(" ".join(tickers))
@@ -191,7 +240,7 @@ def list_tickers() -> None:
 
 def update_data() -> None:
     constituents = get_sp500_tickers()
-    tickers = list(dict.fromkeys([*constituents, "SPY"]))
+    tickers = list(dict.fromkeys([*constituents, "SPY", *SECTOR_ETFS, VIX_TICKER]))
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     now = pd.Timestamp.now(tz=ZoneInfo("America/New_York"))
     full_history = []
@@ -202,7 +251,7 @@ def update_data() -> None:
             full_history.append(ticker)
             continue
         try:
-            stored_columns = set(pd.read_csv(path, nrows=0).columns)
+            stored_columns = set(read_csv(path, nrows=0).columns)
         except (OSError, pd.errors.ParserError):
             stored_columns = set()
         refresh_due = _full_refresh_due(path, now)
@@ -210,7 +259,7 @@ def update_data() -> None:
             full_history.append(ticker)
         else:
             last_date = pd.to_datetime(
-                pd.read_csv(path, usecols=["Date"])["Date"]
+                read_csv(path, usecols=["Date"])["Date"]
             ).max()
             start = (last_date - pd.Timedelta(days=10)).strftime("%Y-%m-%d")
             incremental_batches.setdefault(start, []).append(ticker)
@@ -237,7 +286,7 @@ def update_data() -> None:
 
                 path = _ticker_file(ticker)
                 if path.exists() and start != START_DATE:
-                    old = pd.read_csv(path, parse_dates=["Date"], index_col="Date")
+                    old = read_csv(path, parse_dates=["Date"], index_col="Date")
                     old.index = pd.to_datetime(old.index, utc=True).tz_convert(None).normalize()
                     old = _drop_incomplete_session(old, now)
                     fresh, drifted = _merge_price_history(old, fresh)
@@ -272,4 +321,7 @@ def update_data() -> None:
                 _record_full_refresh(_ticker_file(ticker), now)
                 updated += 1
 
-    print(f"Updated {updated} price files for {len(constituents)} current constituents and SPY.")
+    print(
+        f"Updated {updated} price files for {len(constituents)} current constituents, "
+        "SPY, sector ETFs, and VIX."
+    )

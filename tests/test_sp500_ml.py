@@ -9,17 +9,30 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 
-from dashboard_server import _project_python
+
+def setUpModule():
+    # Feature unit tests must not depend on live market data or cloud credentials.
+    temporary = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(temporary.cleanup)
+    market_data = patch("sp500_ml.paths.DATA_DIR", Path(temporary.name))
+    market_data.start()
+    unittest.addModuleCleanup(market_data.stop)
+
+from dashboard_server import _model_inspection_payload, _project_python
 from vercel_app import app as vercel_app
 from sp500_ml import (
     FUNDAMENTAL_FEATURES,
+    FUNDAMENTAL_SOURCE_COLUMNS,
     FEATURES,
+    MODEL_TARGET_COLUMN,
+    MODEL_TARGET,
     PRICE_COLUMN_ORDER,
     PRICE_FEATURES,
     PREDICTIONS_PATH,
     _align_fundamental_events,
     _atomic_write_prices,
     _drop_incomplete_session,
+    _forecast_latest_close,
     _extract_ticker,
     _final_holdout_metrics,
     _full_refresh_due,
@@ -28,6 +41,7 @@ from sp500_ml import (
     _get_sec_user_agent,
     _load_fundamentals,
     _load_training_fundamentals,
+    _read_fundamentals,
     _merge_price_history,
     _metrics_for_console,
     _model_artifact_paths,
@@ -64,6 +78,73 @@ def make_prices(dates: pd.DatetimeIndex, start: float) -> pd.DataFrame:
         },
         index=dates,
     )
+
+
+class DashboardModelInspectionTests(unittest.TestCase):
+    def test_ridge_contributions_sum_to_the_model_prediction(self) -> None:
+        features = ["feature_a", "feature_b"]
+        training = pd.DataFrame(
+            {"feature_a": [0.1, 0.2, -0.1, 0.3], "feature_b": [1, 2, 3, 4]}
+        )
+        model = _new_model("ridge", ridge_alpha=1.0).fit(
+            training, [0.01, 0.02, -0.01, 0.03]
+        )
+        feature_row = pd.DataFrame(
+            {"close": [100.0], "feature_a": [0.15], "feature_b": [2.5]},
+            index=pd.to_datetime(["2025-01-02"]),
+        )
+        predicted_return = float(model.predict(feature_row[features])[0])
+
+        inspection = _model_inspection_payload(
+            {
+                "features": features,
+                "model": model,
+                "model_type": "ridge",
+                "ridge_alpha": 1.0,
+            },
+            feature_row,
+            predicted_return,
+        )
+
+        self.assertEqual(
+            inspection["explanationType"], "additive_standardized_coefficients"
+        )
+        self.assertAlmostEqual(inspection["contributionSum"], predicted_return)
+        self.assertTrue(
+            all(feature["contribution"] is not None for feature in inspection["features"])
+        )
+
+    def test_model_inspection_uses_saved_signal_rule(self) -> None:
+        row = pd.DataFrame({"close": [100.0], "feature_a": [0.15]}, index=pd.to_datetime(["2025-01-02"]))
+        inspection = _model_inspection_payload(
+            {"features": ["feature_a"], "model": _new_model("hist_gradient_boosting"),
+             "entry_threshold": 0.015, "transaction_cost_bps_per_side": 25.0},
+            row, 0.019,
+        )
+        self.assertEqual(inspection["entryThreshold"], 0.015)
+        self.assertEqual(inspection["transactionCostBpsPerSide"], 25.0)
+        self.assertAlmostEqual(inspection["signalEdgeAfterCosts"], 0.014)
+        self.assertFalse(inspection["enterLong"])
+
+    def test_hist_gradient_boosting_does_not_claim_feature_contributions(self) -> None:
+        feature_row = pd.DataFrame(
+            {"close": [100.0], "feature_a": [0.15]},
+            index=pd.to_datetime(["2025-01-02"]),
+        )
+
+        inspection = _model_inspection_payload(
+            {
+                "features": ["feature_a"],
+                "model": _new_model("hist_gradient_boosting"),
+                "model_type": "hist_gradient_boosting",
+            },
+            feature_row,
+            0.02,
+        )
+
+        self.assertEqual(inspection["explanationType"], "feature_values_only")
+        self.assertIsNone(inspection["features"][0]["contribution"])
+        self.assertEqual(inspection["features"][0]["value"], 0.15)
 
 
 class BuildFeaturesTests(unittest.TestCase):
@@ -212,7 +293,9 @@ class BuildFeaturesTests(unittest.TestCase):
                 return_value=(prediction, "0123456789abcdef"),
             ), patch("sp500_ml.paper._fetch_recent_news", return_value=headlines), patch(
                 "sp500_ml.paper._save_news_cache"
-            ), patch("sp500_ml.paper._ticker_file", return_value=prices_path):
+            ), patch("sp500_ml.paper._ticker_file", return_value=prices_path), patch(
+                "sp500_ml.paper.utc_now", return_value=pd.Timestamp("2026-09-28T21:00:00Z")
+            ):
                 paper_trade("AMD", entry_threshold=0.005)
                 headlines[:] = [{
                     "published_at_utc": "2026-09-29T12:00:00+00:00",
@@ -223,7 +306,7 @@ class BuildFeaturesTests(unittest.TestCase):
                 }]
                 paper_trade("AMD", entry_threshold=0.005)
 
-            ledger_path = ledger_dir / "AMD_hist_gradient_boosting_0123456789_v2.csv"
+            ledger_path = ledger_dir / "AMD_hist_gradient_boosting_0123456789_v3.csv"
             ledger = pd.read_csv(ledger_path)
 
         self.assertTrue(bool(ledger.loc[0, "enter_long"]))
@@ -285,9 +368,7 @@ class BuildFeaturesTests(unittest.TestCase):
 
         derived_q4_date = pd.Timestamp("2025-02-16")
         self.assertIn(derived_q4_date, events.index)
-        self.assertAlmostEqual(
-            events.loc[derived_q4_date, "fund_revenue_log"], np.sign(130) * np.log1p(130)
-        )
+        self.assertAlmostEqual(events.loc[derived_q4_date, "fund_revenue_raw"], 130)
 
     def test_metrics_for_console_hides_holdout_unless_revealed(self) -> None:
         metrics = {"ticker": "AMD"}
@@ -302,7 +383,7 @@ class BuildFeaturesTests(unittest.TestCase):
 
     def test_feature_groups_are_explicit_and_partition_features(self) -> None:
         self.assertEqual(PRICE_FEATURES + FUNDAMENTAL_FEATURES, FEATURES)
-        self.assertEqual(len(PRICE_FEATURES), 15)
+        self.assertEqual(len(PRICE_FEATURES), 53)
         self.assertEqual(len(FUNDAMENTAL_FEATURES), 7)
 
     def test_hist_gradient_boosting_uses_absolute_error_loss(self) -> None:
@@ -315,8 +396,25 @@ class BuildFeaturesTests(unittest.TestCase):
         metrics, _ = _final_holdout_metrics(features, holdout_sessions=60)
 
         self.assertIn("mean_absolute_return_error", metrics)
-        self.assertIn("previous_close_baseline_mean_absolute_return_error", metrics)
+        self.assertIn("zero_return_baseline_mean_absolute_return_error", metrics)
         self.assertLess(metrics["mean_absolute_return_error"], 1)
+
+    def test_five_session_holdout_purges_boundary_and_uses_non_overlapping_trades(self) -> None:
+        dates = pd.bdate_range("2023-01-01", periods=360)
+        features = build_features(make_prices(dates, 100), make_prices(dates, 400))
+
+        metrics, trade_log = _final_holdout_metrics(
+            features,
+            holdout_sessions=60,
+            model_type="ridge",
+            target_key="open_to_close_5d",
+        )
+
+        self.assertEqual(metrics["target_key"], "open_to_close_5d")
+        self.assertIsNone(metrics["mae"])
+        self.assertEqual(metrics["sessions"], 60)
+        self.assertEqual(len(trade_log), 12)
+        self.assertLess(metrics["training_through"], metrics["period_start"])
 
     def test_compare_all_skips_data_errors_but_raises_real_bugs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -342,6 +440,16 @@ class BuildFeaturesTests(unittest.TestCase):
         ledger = pd.DataFrame(
             [{
                 "signal_date": dates[0].date().isoformat(),
+                "ticker": "AMD",
+                "model_type": "hist_gradient_boosting",
+                "model_sha256": __import__("hashlib").sha256(b"model").hexdigest(),
+                "created_at_utc": "2026-01-05T22:00:00Z",
+                "expected_execution_date": "2026-01-06",
+                "entry_threshold": 0.0,
+                "next_open": np.nan,
+                "next_close": np.nan,
+                "net_return_if_traded": np.nan,
+                "strategy_daily_return": np.nan,
                 "predicted_return": 0.03,
                 "transaction_cost_bps_per_side": 10.0,
                 "signal_edge_after_costs": 0.028,
@@ -352,12 +460,16 @@ class BuildFeaturesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ledger_path = Path(directory) / "ledger.csv"
             prices_path = Path(directory) / "prices.csv"
+            model_path = Path(directory) / "model.joblib"
+            model_path.write_bytes(b"model")
             ledger.to_csv(ledger_path, index=False)
             pd.DataFrame(
                 {"Open": [100.0, 101.0, 102.0], "Close": [100.0, 102.0, 103.0]},
                 index=dates,
             ).to_csv(prices_path, index_label="Date")
-            with patch("sp500_ml.paper._paper_ledger_path", return_value=ledger_path), patch(
+            with patch("sp500_ml.paper._model_artifact_paths", return_value=(model_path, None, None)), patch(
+                "sp500_ml.paper.PAPER_DIR", Path(directory)
+            ), patch("sp500_ml.paper._paper_ledger_path", return_value=ledger_path), patch(
                 "sp500_ml.paper._ticker_file", return_value=prices_path
             ), patch("sp500_ml.paper._drop_incomplete_session", side_effect=lambda p: p):
                 paper_status("AMD")
@@ -384,9 +496,7 @@ class BuildFeaturesTests(unittest.TestCase):
         events = _fundamental_events_from_companyfacts(facts)
 
         # The preferred (first-listed) tag wins the overlap.
-        self.assertAlmostEqual(
-            events.iloc[0]["fund_revenue_log"], np.log1p(120)
-        )
+        self.assertAlmostEqual(events.iloc[0]["fund_revenue_raw"], 120)
 
     def test_q4_skip_is_logged(self) -> None:
         def entry(start, end, filed, value, form="10-Q"):
@@ -411,17 +521,54 @@ class BuildFeaturesTests(unittest.TestCase):
             PREDICTIONS_PATH.with_name("predictions_ridge.csv"),
         )
 
-    def test_model_artifacts_are_separate_and_keep_legacy_hist_paths(self) -> None:
+    @patch("sp500_ml.models.resolve_generation", return_value=None)
+    def test_model_artifacts_are_separate_by_model_and_target(self, _) -> None:
         hist_paths = _model_artifact_paths("AMD", "hist_gradient_boosting")
         ridge_paths = _model_artifact_paths("AMD", "ridge")
 
-        self.assertEqual(hist_paths[0].name, "AMD_next_close.joblib")
-        self.assertEqual(hist_paths[1].name, "AMD_metrics.json")
-        self.assertEqual(hist_paths[2].name, "AMD_final_holdout_trades.csv")
+        self.assertEqual(hist_paths[0].name, "AMD_open_to_close_next_close.joblib")
+        self.assertEqual(hist_paths[1].name, "AMD_open_to_close_metrics.json")
+        self.assertEqual(
+            hist_paths[2].name, "AMD_open_to_close_final_holdout_trades.csv"
+        )
         self.assertTrue(
             all(hist != ridge for hist, ridge in zip(hist_paths, ridge_paths))
         )
-        self.assertEqual(ridge_paths[0].name, "AMD_ridge_next_close.joblib")
+        self.assertEqual(
+            ridge_paths[0].name, "AMD_ridge_open_to_close_next_close.joblib"
+        )
+        self.assertNotEqual(hist_paths[0].name, "AMD_next_close.joblib")
+        five_day_path = _model_artifact_paths(
+            "AMD", "hist_gradient_boosting", "open_to_close_5d"
+        )[0]
+        self.assertEqual(
+            five_day_path.name, "AMD_open_to_close_5d_next_close.joblib"
+        )
+        self.assertNotEqual(five_day_path, hist_paths[0])
+
+    def test_old_target_model_artifact_requires_retraining(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model_path = root / "model.joblib"
+            price_path = root / "prices.csv"
+            model_path.write_bytes(b"old-model")
+            price_path.write_text("Date,Open,High,Low,Close,Volume\n", encoding="utf-8")
+            with patch(
+                "sp500_ml.training._model_artifact_paths",
+                return_value=(model_path, root / "metrics.json", root / "trades.csv"),
+            ), patch("sp500_ml.training._ticker_file", return_value=price_path), patch(
+                "sp500_ml.training.joblib.load",
+                return_value={
+                    "ticker": "AMD",
+                    "model_type": "ridge",
+                    "target": "next-session close-to-close return",
+                    "features": [],
+                },
+            ):
+                with self.assertRaisesRegex(RuntimeError, "Retrain it"):
+                    _forecast_latest_close("AMD", "ridge")
+
+        self.assertEqual(MODEL_TARGET, "next-session open-to-close return")
 
     def test_new_paper_ledger_schema_uses_separate_versioned_path(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch(
@@ -563,6 +710,8 @@ class BuildFeaturesTests(unittest.TestCase):
         cache_path = Mock()
         cache_path.exists.return_value = False
         with patch("sp500_ml.fundamentals._fundamental_file", return_value=cache_path), patch(
+            "sp500_ml.fundamentals._fundamentals_cache_is_fresh", return_value=False
+        ), patch(
             "sp500_ml.fundamentals.update_fundamentals"
         ) as refresh, patch("sp500_ml.fundamentals._read_fundamentals", return_value=cached) as read:
             fundamentals, warning = _load_training_fundamentals("AMD", dates)
@@ -579,9 +728,9 @@ class BuildFeaturesTests(unittest.TestCase):
             index=pd.DatetimeIndex([dates[0]]),
         )
         cache_path = Mock()
-        cache_path.exists.return_value = True
-        cache_path.stat.return_value.st_mtime = pd.Timestamp.now(tz="UTC").timestamp() - 3600
         with patch("sp500_ml.fundamentals._fundamental_file", return_value=cache_path), patch(
+            "sp500_ml.fundamentals._fundamentals_cache_is_fresh", return_value=True
+        ), patch(
             "sp500_ml.fundamentals.update_fundamentals"
         ) as refresh, patch("sp500_ml.fundamentals._read_fundamentals", return_value=cached):
             fundamentals, warning = _load_training_fundamentals("AMD", dates)
@@ -589,6 +738,32 @@ class BuildFeaturesTests(unittest.TestCase):
         refresh.assert_not_called()
         self.assertIs(fundamentals, cached)
         self.assertIsNone(warning)
+
+    def test_legacy_fundamentals_cache_migrates_signed_logs_to_raw_levels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cache_path = Path(directory) / "AMD.csv"
+            available_date = pd.Timestamp("2024-05-01")
+            legacy = pd.DataFrame(
+                {
+                    "fund_revenue_log": [np.log1p(100)],
+                    "fund_net_income_log": [np.sign(-10) * np.log1p(10)],
+                    "fund_assets_log": [np.log1p(1000)],
+                    "fund_net_margin": [-0.1],
+                    "fund_operating_margin": [0.1],
+                    "fund_liabilities_to_assets": [0.4],
+                    "fund_equity_to_assets": [0.6],
+                },
+                index=pd.DatetimeIndex([available_date], name="Date"),
+            )
+            legacy.to_csv(cache_path, index_label="Date")
+            with patch("sp500_ml.fundamentals._fundamental_file", return_value=cache_path):
+                migrated = _read_fundamentals(
+                    "AMD", pd.DatetimeIndex([available_date, available_date + pd.Timedelta(days=1)])
+                )
+
+        self.assertAlmostEqual(migrated.iloc[0]["fund_revenue_raw"], 100)
+        self.assertAlmostEqual(migrated.iloc[0]["fund_net_income_raw"], -10)
+        self.assertAlmostEqual(migrated.iloc[0]["fund_assets_raw"], 1000)
 
     def test_training_uses_cached_sec_fundamentals_when_refresh_fails(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=2)
@@ -598,8 +773,9 @@ class BuildFeaturesTests(unittest.TestCase):
         )
         cache_path = Mock()
         cache_path.exists.return_value = True
-        cache_path.stat.return_value.st_mtime = 0
         with patch("sp500_ml.fundamentals._fundamental_file", return_value=cache_path), patch(
+            "sp500_ml.fundamentals._fundamentals_cache_is_fresh", return_value=False
+        ), patch(
             "sp500_ml.fundamentals.update_fundamentals",
             side_effect=RuntimeError("SEC_USER_AGENT is missing"),
         ), patch("sp500_ml.fundamentals._read_fundamentals", return_value=cached):
@@ -634,6 +810,30 @@ class BuildFeaturesTests(unittest.TestCase):
         self.assertEqual(result.index.max(), dates[-1])
         self.assertTrue(result["next_close"].tail(1).isna().all())
 
+    def test_production_target_is_next_session_open_to_close_return(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=120)
+        prices = make_prices(dates, 100)
+        result = build_features(prices, make_prices(dates, 400))
+        signal_date = dates[80]
+        expected = prices.loc[dates[81], "Close"] / prices.loc[dates[81], "Open"] - 1
+
+        self.assertAlmostEqual(
+            result.loc[signal_date, "next_open_to_close_return"], expected
+        )
+
+    def test_five_session_target_uses_next_open_and_fifth_session_close(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=100)
+        prices = make_prices(dates, 100)
+        features = build_features(prices, make_prices(dates, 400))
+        signal_date = dates[70]
+        expected = prices["Close"].iloc[75] / prices["Open"].iloc[71] - 1
+
+        self.assertAlmostEqual(
+            features.loc[signal_date, "next_5d_open_to_close_return"], expected
+        )
+        self.assertEqual(features.loc[signal_date, "next_5d_date"], dates[75])
+        self.assertTrue(features["next_5d_open_to_close_return"].tail(5).isna().all())
+
     def test_feature_rows_do_not_contain_non_finite_values(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=120)
         prices = make_prices(dates, 100)
@@ -641,8 +841,18 @@ class BuildFeaturesTests(unittest.TestCase):
 
         result = build_features(prices, market)
 
-        self.assertTrue(result.dropna(subset=["next_close"])[PRICE_FEATURES].notna().all().all())
-        self.assertTrue(result[PRICE_FEATURES].notna().all().all())
+        required_price_features = [
+            feature
+            for feature in PRICE_FEATURES
+            if not feature.startswith(("sector_", "vix_"))
+        ]
+        self.assertTrue(
+            result.dropna(subset=["next_close"])[required_price_features]
+            .notna()
+            .all()
+            .all()
+        )
+        self.assertTrue(result[required_price_features].notna().all().all())
         self.assertTrue((result["volatility_20d"] >= 0).all())
 
     def test_fundamental_availability_is_never_the_filing_day_itself(self) -> None:
@@ -723,19 +933,62 @@ class BuildFeaturesTests(unittest.TestCase):
 
         class _RecordingStub:
             def fit(self, X, y):
-                boundaries.append({"train_max": X.index.max()})
+                boundaries.append(
+                    {
+                        "train_max": X.index.max(),
+                        "train_target_max": features.loc[X.index, "next_date"].max(),
+                    }
+                )
                 return self
 
             def predict(self, X):
                 boundaries[-1]["validation_min"] = X.index.min()
                 return np.zeros(len(X))
 
-        with patch("sp500_ml.backtest._new_model", return_value=_RecordingStub()):
+        def fit_stub(model_type, X, y, ridge_alpha=10.0, purge_gap=5):
+            model = _RecordingStub()
+            model.fit(X, y)
+            return model, {}
+
+        with patch("sp500_ml.backtest._fit_tuned_model", side_effect=fit_stub):
             _walk_forward_metrics(features)
 
-        self.assertEqual(len(boundaries), 3)
+        self.assertEqual(len(boundaries), 5)
         for fold in boundaries:
             self.assertLess(fold["train_max"], fold["validation_min"])
+            self.assertLessEqual(fold["train_target_max"], fold["validation_min"])
+            self.assertEqual(
+                dates.get_loc(fold["validation_min"])
+                - dates.get_loc(fold["train_max"])
+                - 1,
+                5,
+            )
+
+    def test_walk_forward_fits_open_to_close_target(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=300)
+        features = build_features(make_prices(dates, 100), make_prices(dates, 400))
+        fitted_targets = []
+
+        class _RecordingStub:
+            def fit(self, X, y):
+                fitted_targets.append((X.index, np.asarray(y)))
+                return self
+
+            def predict(self, X):
+                return np.zeros(len(X))
+
+        def fit_stub(model_type, X, y, ridge_alpha=10.0, purge_gap=5):
+            model = _RecordingStub()
+            model.fit(X, y)
+            return model, {}
+
+        with patch("sp500_ml.backtest._fit_tuned_model", side_effect=fit_stub):
+            _walk_forward_metrics(features)
+
+        self.assertEqual(len(fitted_targets), 5)
+        for training_dates, actual_targets in fitted_targets:
+            expected = features.loc[training_dates, MODEL_TARGET_COLUMN].to_numpy()
+            np.testing.assert_allclose(actual_targets, expected)
 
     def test_sec_fundamentals_only_become_available_after_filing(self) -> None:
         observation = {
@@ -770,17 +1023,55 @@ class BuildFeaturesTests(unittest.TestCase):
 
         self.assertTrue(aligned.iloc[0].isna().all())
         self.assertAlmostEqual(aligned.iloc[1]["fund_net_margin"], 0.1)
-        self.assertEqual(aligned.iloc[2]["fund_assets_log"], aligned.iloc[1]["fund_assets_log"])
-        self.assertEqual(set(events.columns), set(FUNDAMENTAL_FEATURES))
+        self.assertEqual(aligned.iloc[2]["fund_assets_raw"], aligned.iloc[1]["fund_assets_raw"])
+        self.assertTrue(set(FUNDAMENTAL_SOURCE_COLUMNS).issubset(events.columns))
+        self.assertTrue(
+            {
+                "fund_net_margin",
+                "fund_operating_margin",
+                "fund_liabilities_to_assets",
+                "fund_equity_to_assets",
+            }.issubset(events.columns)
+        )
 
-    def test_walk_forward_metrics_use_three_ordered_folds(self) -> None:
+    def test_fundamental_growth_uses_only_available_point_in_time_values(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=400)
+        source_columns = [
+            "fund_revenue_raw",
+            "fund_net_income_raw",
+            "fund_operating_income_raw",
+            "fund_assets_raw",
+            "fund_liabilities_raw",
+            "fund_equity_raw",
+        ]
+        events = pd.DataFrame(
+            [
+                [100, 10, 20, 1000, 400, 600],
+                [200, 20, 40, 2000, 800, 1200],
+            ],
+            index=[dates[0], dates[252]],
+            columns=source_columns,
+        )
+        prices = make_prices(dates, 100)
+        features = build_features(prices, make_prices(dates, 400), events)
+
+        self.assertTrue(
+            np.isnan(features.loc[dates[251], "fund_revenue_yoy_log_change"])
+        )
+        expected = np.log1p(200) - np.log1p(100)
+        self.assertAlmostEqual(
+            features.loc[dates[252], "fund_revenue_yoy_log_change"], expected
+        )
+
+    def test_walk_forward_metrics_use_five_ordered_purged_folds(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=300)
         features = build_features(make_prices(dates, 100), make_prices(dates, 400))
 
         metrics = _walk_forward_metrics(features)
 
         folds = metrics["validation_folds"]
-        self.assertEqual(len(folds), 3)
+        self.assertEqual(len(folds), 5)
+        self.assertEqual(metrics["purge_gap_sessions"], 5)
         self.assertEqual(
             [fold["validation_start"] for fold in folds],
             sorted(fold["validation_start"] for fold in folds),
@@ -794,32 +1085,92 @@ class BuildFeaturesTests(unittest.TestCase):
         metrics = _walk_forward_metrics(features, model_type="ridge", ridge_alpha=1.0)
 
         self.assertEqual(metrics["model_type"], "ridge")
-        self.assertEqual(len(metrics["validation_folds"]), 3)
+        self.assertEqual(len(metrics["validation_folds"]), 5)
         self.assertGreater(metrics["mean_absolute_return_error"], 0)
 
-    def test_intraday_model_comparison_uses_three_development_folds(self) -> None:
+    def test_five_session_target_uses_purged_walk_forward_evaluation(self) -> None:
+        dates = pd.bdate_range("2024-01-01", periods=360)
+        features = build_features(make_prices(dates, 100), make_prices(dates, 400))
+
+        metrics = _walk_forward_metrics(
+            features,
+            model_type="ridge",
+            target_key="open_to_close_5d",
+        )
+
+        self.assertEqual(metrics["target"], "5-session forward open-to-close return")
+        self.assertEqual(len(metrics["validation_folds"]), 5)
+        for fold in metrics["validation_folds"]:
+            self.assertLess(fold["training_target_end"], fold["validation_start"])
+            self.assertEqual(fold["purge_gap_sessions"], 5)
+
+    def test_model_comparison_uses_five_purged_development_folds(self) -> None:
         dates = pd.bdate_range("2024-01-01", periods=320)
         features = build_features(make_prices(dates, 100), make_prices(dates, 400))
 
-        comparison = _walk_forward_intraday_comparison(features)
+        comparison = _walk_forward_intraday_comparison(features, entry_threshold=-0.01)
 
         self.assertEqual(
             set(comparison),
-            {"ridge", "hist_gradient_boosting"},
+            {"ridge", "hist_gradient_boosting", "hybrid", "zero_return_baseline"},
         )
         self.assertEqual(
             len(comparison["ridge"]["validation_folds"]),
-            3,
+            5,
         )
         self.assertEqual(
             len(comparison["hist_gradient_boosting"]["validation_folds"]),
-            3,
+            5,
         )
         self.assertEqual(
             comparison["ridge"]["target"],
             "next-session open-to-close return",
         )
         self.assertGreater(comparison["ridge"]["validation_rows"], 0)
+        baseline = comparison["zero_return_baseline"]
+        self.assertEqual(baseline["validation_rows"], comparison["ridge"]["validation_rows"])
+        self.assertEqual(baseline["trading"]["trades"], 0)
+        self.assertEqual(baseline["trading"]["cumulative_return"], 0)
+        self.assertIsNone(baseline["directional_accuracy"])
+        expected_mae = np.mean([
+            fold["zero_return_baseline_mean_absolute_return_error"]
+            for fold in _walk_forward_metrics(features, model_type="ridge")["validation_folds"]
+        ])
+        self.assertAlmostEqual(baseline["mean_absolute_return_error"], expected_mae)
+
+    def test_dashboard_holdout_requires_explicit_reveal(self) -> None:
+        import dashboard_server
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prices = root / "AAA.csv"
+            make_prices(pd.bdate_range("2024-01-01", periods=100), 100).to_csv(
+                prices, index_label="Date"
+            )
+            metrics = root / "AAA_open_to_close_metrics.json"
+            report = {"target_key": "open_to_close", "target": MODEL_TARGET}
+            metrics.write_text(json.dumps(report), encoding="utf-8")
+            holdout = root / "AAA_open_to_close_holdout.json"
+            # Invalid JSON proves ordinary reads never open the sealed report.
+            holdout.write_text("sealed", encoding="utf-8")
+            with patch.object(dashboard_server.sp500_ml, "_ticker_file", return_value=prices), patch.object(
+                dashboard_server.sp500_ml, "_model_artifact_paths",
+                return_value=(root / "missing.joblib", metrics, root / "trades.csv"),
+            ), patch.object(dashboard_server.sp500_ml, "_paper_ledger_path", return_value=root / "missing.csv"), patch.object(
+                dashboard_server.sp500_ml, "_price_files", return_value=[prices]
+            ), patch.object(dashboard_server.sp500_ml, "NEWS_DIR", root), patch.object(
+                dashboard_server.sp500_ml, "MODEL_DIR", root
+            ):
+                hidden = dashboard_server._read_dashboard_state("AAA")
+                self.assertIsNone(hidden["holdout"])
+                holdout.write_text(json.dumps({"sessions": 252}), encoding="utf-8")
+                revealed = dashboard_server._read_dashboard_state("AAA", reveal_holdout=True)
+                self.assertEqual(revealed["holdout"]["sessions"], 252)
+                report["final_holdout"] = {"sessions": 252}
+                metrics.write_text(json.dumps(report), encoding="utf-8")
+                hidden = dashboard_server._read_dashboard_state("AAA")
+                self.assertIsNone(hidden["holdout"])
+                self.assertNotIn("final_holdout", hidden["metrics"])
 
     def test_final_holdout_is_separate_and_writes_each_session(self) -> None:
         dates = pd.bdate_range("2023-01-01", periods=360)
@@ -851,7 +1202,7 @@ class BuildFeaturesTests(unittest.TestCase):
 
         metrics = _walk_forward_metrics(features)
 
-        self.assertEqual(len(metrics["validation_folds"]), 3)
+        self.assertEqual(len(metrics["validation_folds"]), 5)
 
     def test_trade_metrics_count_net_wins_after_costs(self) -> None:
         validation = pd.DataFrame(

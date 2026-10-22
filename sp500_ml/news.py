@@ -210,6 +210,10 @@ def _fetch_recent_news(ticker: str, limit: int = 5) -> list[dict]:
 
 def _save_news_cache(ticker: str, headlines: list[dict]) -> dict:
     ticker = _normalize_ticker(ticker)
+    from .risk_news import archive_headlines
+    path = NEWS_DIR / f"{ticker}.json"
+    previous = json.loads(path.read_text()).get("headlines", []) if path.exists() else []
+    archive_headlines(ticker, [*previous, *headlines], directory=NEWS_DIR)
     NEWS_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "ticker": ticker,

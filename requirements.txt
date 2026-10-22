@@ -2,7 +2,9 @@ joblib
 lxml
 numpy
 pandas
-requests
+requests>=2.32.2
 scikit-learn
 yfinance
 fastapi
+exchange-calendars>=4.13.2,<5
+PyJWT[crypto]>=2.10,<3

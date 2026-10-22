@@ -1,0 +1,10 @@
+{
+  "name": "stock-prediction-storage",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "convex:dev": "node ./node_modules/convex/bin/main.js dev",
+    "convex:deploy": "node ./node_modules/convex/bin/main.js deploy"
+  },
+  "dependencies": {"convex": "^1.31.0"}
+}

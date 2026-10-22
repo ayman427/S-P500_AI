@@ -3,8 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f5f7f3" />
-    <title>Northstar | Market desk</title>
+    <meta name="theme-color" content="#f4f6ef" />
+    <script>
+      // Apply the saved preference before the app and its styles paint.
+      try {
+        const theme = localStorage.getItem("northstar-theme") === "dark" ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+        document.querySelector('meta[name="theme-color"]').content = theme === "dark" ? "#000000" : "#f4f6ef";
+      } catch { /* Use the default light theme when storage is unavailable. */ }
+    </script>
+    <title>Stock search</title>
   </head>
   <body>
     <div id="root"></div>

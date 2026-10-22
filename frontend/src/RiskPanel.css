@@ -1,0 +1,118 @@
+.risk-panel { --risk-event: #b94c43; border-top: 1px solid var(--line); margin-top: 28px; padding-top: 8px; color: var(--ink); }
+.historical-risk { padding-top: 24px; }
+.historical-risk .risk-panel { border-top: 0; margin-top: 20px; padding-top: 0; }
+.risk-view-switch { display: flex; gap: 4px; width: fit-content; max-width: 100%; padding: 4px; border-radius: 9px; background: var(--surface-soft); border: 1px solid var(--line); }
+.risk-view-switch button { border: 0; border-radius: 6px; padding: 10px 18px; background: transparent; color: var(--muted); font: inherit; font-size: 15px; cursor: pointer; }
+.risk-view-switch button[aria-selected="true"] { background: var(--ink); color: var(--surface); }
+.historical-risk :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.risk-market-details { margin-top: 24px; border-top: 1px solid var(--line); padding-top: 18px; }
+.risk-market-details > summary { font-size: 15px; cursor: pointer; }
+.historical-risk .risk-chart { margin: 22px 0; }
+[data-theme="dark"] .risk-panel { --risk-event: #ed9791; }
+.risk-controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; }
+.risk-controls label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--muted); font-size: 14px; }
+.risk-panel select, .risk-panel button { border: 1px solid var(--line); border-radius: 7px; color: var(--ink); background: var(--surface-soft); font: inherit; padding: 8px; }
+.risk-panel select { max-width: 100%; }
+.risk-panel button { cursor: pointer; }
+.risk-panel :focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.risk-caption { color: var(--muted); font-size: 14px; line-height: 1.8; margin: 12px 0; overflow-wrap: anywhere; }
+.risk-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.risk-stats > div { background: var(--surface-soft); padding: 16px; display: grid; gap: 8px; }
+.risk-stats span { color: var(--muted); font-size: 14px; }
+.risk-stats strong { font-size: 23px; font-weight: 600; }
+.risk-chart { padding: 12px 0; }
+.risk-chart svg { width: 100%; height: auto; display: block; overflow: visible; }
+.risk-chart text { fill: var(--muted); font-size: 14px; }
+.risk-chart circle { cursor: pointer; }
+.risk-panel { --risk-recovery: #2563eb; }
+[data-theme="dark"] .risk-panel { --risk-recovery: #93c5fd; }
+.selected-decline-range { fill: var(--risk-event); opacity: .09; pointer-events: none; }
+.selected-decline-line { fill: none; stroke: var(--risk-event); stroke-width: 4; pointer-events: none; }
+.risk-recovery-point { fill: var(--risk-recovery); stroke: var(--surface); stroke-width: 2; }
+.risk-chart .risk-recovery-point { cursor: default; }
+.risk-price-inspector { fill: transparent; cursor: crosshair; touch-action: pan-y; }
+.risk-price-cursor { pointer-events: none; }
+.risk-price-cursor line { stroke: var(--muted); stroke-dasharray: 3 3; }
+.risk-price-cursor circle { fill: var(--ink); stroke: var(--surface); stroke-width: 2; }
+.risk-price-readout { display: block; margin-top: 14px; font-size: 16px; font-variant-numeric: tabular-nums; }
+.spike-panel { --risk-event: var(--risk-recovery); }
+[data-theme="dark"] .spike-panel { --risk-event: var(--risk-recovery); }
+.spike-chart svg { cursor: crosshair; touch-action: pan-y; }
+.spike-explanation { margin: 24px 0; padding: 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.spike-explanation-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+.spike-explanation-heading h4 { margin: 0; font-size: 16px; }
+.spike-evidence-badge { border: 1px solid var(--line); border-radius: 20px; padding: 4px 10px; color: var(--muted); font-size: 14px; }
+.spike-explanation-summary { font-size: 15px; line-height: 1.7; }
+.spike-explanation a { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; font-size: 14px; line-height: 1.6; }
+.risk-event-legend { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 14px; font-size: 14px; line-height: 1.6; }
+.risk-event-legend span { display: flex; align-items: center; gap: 7px; }
+.decline-legend { width: 22px; border-top: 4px solid var(--risk-event); }
+.recovery-legend { width: 10px; height: 10px; border-radius: 50%; background: var(--risk-recovery); }
+.risk-comparison { margin: 22px 0; }
+.risk-comparison h4, .risk-drawdown-chart h4, .risk-chart h4 { margin: 0 0 14px; font-size: 15px; }
+.risk-comparison table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.risk-comparison caption { text-align: left; color: var(--muted); font-size: 14px; margin-bottom: 10px; line-height: 1.6; }
+.risk-comparison th, .risk-comparison td { text-align: right; padding: 12px 6px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+.risk-comparison th:first-child { text-align: left; }
+.risk-comparison tbody th { font-weight: 400; color: var(--muted); }
+.risk-drawdown-chart { padding: 18px 0; }
+.risk-drawdown-chart svg { display: block; width: 100%; height: auto; }
+.risk-chart-legend { display: flex; flex-wrap: wrap; gap: 20px; font-size: 14px; }
+.risk-chart-legend span { display: flex; align-items: center; gap: 7px; }
+.risk-chart-legend i { width: 22px; height: 0; border-top: 2px solid var(--risk-event); }
+.risk-chart-legend .market-legend { border-top: 2px dashed var(--muted); }
+.risk-drawdown-scale { display: flex; justify-content: space-between; color: var(--muted); font-size: 14px; margin-top: 14px; }
+.risk-event-list { display: grid; gap: 8px; }
+.risk-event-list button { display: grid; grid-template-columns: 1fr auto; text-align: left; gap: 7px; padding: 12px; }
+.risk-event-list button[aria-pressed="true"] { border-color: var(--risk-event); }
+.risk-event-list span { font-size: 14px; }
+.risk-event-list strong { color: var(--risk-event); }
+.risk-event-list small { grid-column: 1 / -1; color: var(--muted); font-size: 14px; }
+.risk-event-detail { padding: 18px 0 0; }
+.risk-event-detail h4 { font-size: 14px; margin: 8px 0 16px; }
+.risk-methods { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+.risk-methods summary { font-size: 14px; cursor: pointer; }
+.risk-stats span, .risk-event-list span, .risk-event-list small, .risk-event-facts dt { line-height: 1.6; }
+.risk-event-facts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.risk-event-facts dt { color: var(--muted); font-size: 14px; margin-bottom: 6px; }
+.risk-event-facts dd { margin: 0; font-size: 14px; line-height: 1.6; }
+@media (max-width: 450px) { .risk-event-facts { grid-template-columns: 1fr; } .risk-controls label { width: 100%; justify-content: space-between; } }
+.spike-prior-activity { margin: 20px 0; padding: 16px; border: 1px solid var(--line); border-radius: 9px; }
+.spike-prior-activity h4 { margin-top: 0; }
+.spike-prior-activity table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 14px; }
+.spike-prior-activity th, .spike-prior-activity td { padding: 10px 4px; text-align: right; overflow-wrap: anywhere; border-bottom: 1px solid var(--line); }
+.spike-prior-activity th:first-child { text-align: left; }
+.spike-prior-activity details { margin-top: 12px; font-size: 14px; }
+.rise-evidence-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 16px 0; }
+.rise-evidence-grid dt { color: var(--muted); font-size: 14px; }
+.rise-evidence-grid dd { margin: 6px 0 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* Rise investigation only. */
+.spike-panel .risk-controls { align-items: end; gap: 12px; }
+.spike-panel .risk-controls label { display: grid; gap: 6px; }
+.spike-panel .risk-controls select { min-height: 42px; }
+.spike-panel .spike-explanation { padding: 20px; }
+.spike-panel .spike-explanation-heading h4 { font-size: 21px; line-height: 1.4; }
+.spike-panel .spike-explanation-summary { font-size: 16px; margin: 14px 0; }
+.spike-panel .rise-evidence-links, .spike-panel .rise-evidence-quotes { list-style: none; padding: 0; margin: 0; }
+.spike-panel .rise-evidence-links li { padding: 12px 0; border-top: 1px solid var(--line); }
+.spike-panel .rise-evidence-links a { font-size: 16px; }
+.spike-panel .rise-evidence-links span, .spike-panel .rise-evidence-quotes span { display: block; margin-top: 5px; color: var(--muted); font-size: 14px; line-height: 1.7; }
+.spike-panel .rise-details { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px; }
+.spike-panel .rise-details > summary { cursor: pointer; font-size: 16px; }
+.spike-panel .rise-details > section { margin-top: 24px; }
+.spike-panel .rise-details h4 { font-size: 16px; }
+.spike-panel .rise-details p, .spike-panel .rise-details li { font-size: 15px; line-height: 1.7; overflow-wrap: anywhere; }
+.spike-panel .rise-evidence-quotes li { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.spike-panel .rise-coverage dl { display: grid; gap: 10px; font-size: 15px; }
+.spike-panel .rise-coverage dl > div { display: flex; justify-content: space-between; gap: 16px; }
+.spike-panel .rise-coverage dd { margin: 0; color: var(--muted); }
+@media (max-width: 450px) { .spike-panel .risk-controls label { width: 100%; } .spike-panel .spike-explanation { padding: 16px; } }
+
+.spike-panel .anomaly-title { margin: 0; font-size: 21px; }
+.spike-panel .anomaly-signals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin: 20px 0; }
+.spike-panel .anomaly-signals > div { border-left: 3px solid var(--line); padding-left: 12px; }
+.spike-panel .anomaly-signals > div[data-status="elevated"] { border-color: var(--risk-recovery); }
+.spike-panel .anomaly-signals dt, .spike-panel .anomaly-signals span { color: var(--muted); font-size: 14px; line-height: 1.6; }
+.spike-panel .anomaly-signals dd { margin: 5px 0; font-size: 21px; font-variant-numeric: tabular-nums; }
+@media (max-width: 450px) { .spike-panel .anomaly-signals { grid-template-columns: 1fr; } }

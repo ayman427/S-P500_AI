@@ -3,10 +3,15 @@ from __future__ import annotations
 
 import argparse
 
-from .backtest import compare_all_models, compare_models, reassess_saved_models
+from .backtest import (
+    ablate_fundamental_features,
+    compare_all_models,
+    compare_models,
+    reassess_saved_models,
+)
 from .data import list_tickers, update_data
 from .fundamentals import update_fundamentals
-from .models import MODEL_TYPES
+from .models import MODEL_TYPES, MODEL_TARGETS
 from .news import fetch_news
 from .paper import paper_status, paper_trade
 from .training import predict, train_model
@@ -23,6 +28,7 @@ def main() -> None:
             "compare",
             "compare-all",
             "reassess",
+            "feature-ablate",
             "list",
             "train",
             "predict",
@@ -31,12 +37,19 @@ def main() -> None:
             "paper-status",
         ],
     )
+    parser.add_argument("--tickers", nargs="+", help="Explicit local stock tickers for compare-all.")
     parser.add_argument("--ticker", help="S&P 500 ticker to train or predict, e.g. AAPL")
     parser.add_argument(
         "--model",
         choices=MODEL_TYPES,
         default="hist_gradient_boosting",
-        help="Estimator used for next-close training, prediction, and paper trades.",
+        help="Estimator used for open-to-close return training, prediction, and paper trades.",
+    )
+    parser.add_argument(
+        "--target",
+        choices=list(MODEL_TARGETS.keys()),
+        default="open_to_close",
+        help="Prediction target: open_to_close (next-session return) or open_to_close_5d (next-open through the close five sessions forward).",
     )
     parser.add_argument(
         "--ridge-alpha",
@@ -82,12 +95,15 @@ def main() -> None:
         list_tickers()
     elif args.command == "compare-all":
         compare_all_models(
+            tickers=args.tickers,
             limit=args.limit or None,
             entry_threshold=args.entry_threshold,
             transaction_cost_bps=args.transaction_cost_bps,
         )
     elif args.command == "reassess":
         reassess_saved_models()
+    elif args.command == "feature-ablate":
+        ablate_fundamental_features()
     else:
         if not args.ticker:
             parser.error(f"--ticker is required for the {args.command} command")
@@ -96,8 +112,15 @@ def main() -> None:
         elif args.command == "news":
             fetch_news(args.ticker)
         elif args.command == "compare":
-            compare_models(args.ticker, args.entry_threshold, args.transaction_cost_bps)
+            compare_models(
+                args.ticker,
+                args.entry_threshold,
+                args.transaction_cost_bps,
+                target_key=args.target,
+            )
         elif args.command == "paper-trade":
+            if args.target != "open_to_close":
+                parser.error("paper-trade currently supports only --target open_to_close")
             paper_trade(
                 args.ticker,
                 args.entry_threshold,
@@ -115,8 +138,9 @@ def main() -> None:
                 args.model,
                 args.ridge_alpha,
                 args.reveal_holdout,
+                target_key=args.target,
             )
-            predict(args.ticker, args.model)
+            predict(args.ticker, args.model, args.target)
         else:
             if args.command == "train":
                 train_model(
@@ -126,6 +150,7 @@ def main() -> None:
                     args.model,
                     args.ridge_alpha,
                     args.reveal_holdout,
+                    target_key=args.target,
                 )
             elif args.command == "predict":
-                predict(args.ticker, args.model)
+                predict(args.ticker, args.model, args.target)

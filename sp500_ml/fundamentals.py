@@ -7,6 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from .cloud_data import read_csv
+from .cloud_data import write_csv
 import requests
 
 from .data import _normalize_ticker
@@ -28,6 +30,11 @@ FUNDAMENTAL_CONCEPTS = {
 }
 
 FUNDAMENTALS_CACHE_TTL_HOURS = 24
+FUNDAMENTAL_SOURCE_COLUMNS = [
+    "fund_revenue_raw",
+    "fund_net_income_raw",
+    "fund_assets_raw",
+]
 
 
 def _fundamental_file(ticker: str) -> Path:
@@ -136,7 +143,10 @@ def _fundamental_events_from_companyfacts(
             event_series[feature] = observations.set_index("available_date")["value"]
 
     if not event_series:
-        return pd.DataFrame(columns=FUNDAMENTAL_FEATURES, dtype=float)
+        return pd.DataFrame(
+            columns=FUNDAMENTAL_FEATURES + FUNDAMENTAL_SOURCE_COLUMNS,
+            dtype=float,
+        )
 
     fundamentals = pd.concat(event_series, axis=1, sort=True).sort_index().ffill()
     revenue = fundamentals.get("revenue", pd.Series(index=fundamentals.index, dtype=float))
@@ -151,9 +161,12 @@ def _fundamental_events_from_companyfacts(
     equity = fundamentals.get("equity", pd.Series(index=fundamentals.index, dtype=float))
 
     result = pd.DataFrame(index=fundamentals.index)
-    result["fund_revenue_log"] = np.sign(revenue) * np.log1p(np.abs(revenue))
-    result["fund_net_income_log"] = np.sign(net_income) * np.log1p(np.abs(net_income))
-    result["fund_assets_log"] = np.sign(assets) * np.log1p(np.abs(assets))
+    for feature, values in (
+        ("fund_revenue_raw", revenue),
+        ("fund_net_income_raw", net_income),
+        ("fund_assets_raw", assets),
+    ):
+        result[feature] = values
     result["fund_net_margin"] = net_income / revenue.replace(0, np.nan)
     result["fund_operating_margin"] = operating_income / revenue.replace(0, np.nan)
     result["fund_liabilities_to_assets"] = liabilities / assets.replace(0, np.nan)
@@ -218,7 +231,7 @@ def update_fundamentals(ticker: str) -> None:
     if events.empty:
         raise RuntimeError(f"No supported SEC company facts found for {ticker}.")
     path = _fundamental_file(ticker)
-    events.to_csv(path, index_label="Date", date_format="%Y-%m-%d")
+    write_csv(events, path, index_label="Date", date_format="%Y-%m-%d")
     print(f"Saved point-in-time fundamentals for {ticker} to {path.relative_to(ROOT)}")
 
 
@@ -236,13 +249,39 @@ def _load_fundamentals(ticker: str, dates: pd.Index) -> pd.DataFrame:
 
 def _read_fundamentals(ticker: str, dates: pd.Index) -> pd.DataFrame:
     path = _fundamental_file(ticker)
-    fundamentals = pd.read_csv(path, parse_dates=["Date"], index_col="Date")
+    fundamentals = read_csv(path, parse_dates=["Date"], index_col="Date")
+    missing_sources = set(FUNDAMENTAL_SOURCE_COLUMNS) - set(fundamentals.columns)
+    if missing_sources:
+        legacy_levels = {
+            "fund_revenue_raw": "fund_revenue_log",
+            "fund_net_income_raw": "fund_net_income_log",
+            "fund_assets_raw": "fund_assets_log",
+        }
+        if not set(legacy_levels.values()).issubset(fundamentals.columns):
+            raise ValueError(
+                "SEC fundamentals cache predates the growth-feature schema and "
+                "cannot be migrated."
+            )
+        for raw_name, legacy_name in legacy_levels.items():
+            signed_log = pd.to_numeric(fundamentals[legacy_name], errors="coerce")
+            fundamentals[raw_name] = np.sign(signed_log) * np.expm1(np.abs(signed_log))
     fundamentals.index = pd.to_datetime(fundamentals.index).normalize()
     return _align_fundamental_events(fundamentals, dates)
 
 
 def _fundamentals_cache_is_fresh(path: Path) -> bool:
     if not path.exists():
+        return False
+    try:
+        columns = set(read_csv(path, nrows=0).columns)
+    except (OSError, pd.errors.ParserError):
+        return False
+    legacy_level_columns = {
+        "fund_revenue_log",
+        "fund_net_income_log",
+        "fund_assets_log",
+    }
+    if not set(FUNDAMENTAL_SOURCE_COLUMNS).issubset(columns) and not legacy_level_columns.issubset(columns):
         return False
     age = pd.Timestamp.now(tz="UTC") - pd.Timestamp.fromtimestamp(
         path.stat().st_mtime, tz="UTC"

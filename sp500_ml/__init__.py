@@ -21,6 +21,7 @@ import pandas as pd
 
 from .backtest import (
     FINAL_HOLDOUT_SESSIONS,
+    ablate_fundamental_features,
     _final_holdout_metrics,
     _metrics_for_console,
     _new_intraday_ridge_model,
@@ -39,6 +40,8 @@ from .data import (
     PRICE_COLUMN_ORDER,
     PRICE_COLUMNS,
     START_DATE,
+    SECTOR_ETFS,
+    VIX_TICKER,
     _atomic_write_prices,
     _download_batch,
     _drop_incomplete_session,
@@ -52,10 +55,11 @@ from .data import (
     list_tickers,
     update_data,
 )
-from .feature_names import FEATURES, FUNDAMENTAL_FEATURES, PRICE_FEATURES
+from .feature_names import FEATURES, FUNDAMENTAL_FEATURES, PRICE_FEATURES, SECTOR_FEATURES, VIX_FEATURES
 from .features import _available_features, _load_market_data, build_features
 from .fundamentals import (
     FUNDAMENTAL_CONCEPTS,
+    FUNDAMENTAL_SOURCE_COLUMNS,
     _align_fundamental_events,
     _fundamental_events_from_companyfacts,
     _fundamental_file,
@@ -66,7 +70,16 @@ from .fundamentals import (
     _read_windows_sec_user_agent,
     update_fundamentals,
 )
-from .models import MODEL_TYPES, _model_artifact_paths, _new_model, _prediction_output_path
+from .models import (
+    MODEL_TARGET,
+    MODEL_TARGETS,
+    MODEL_TARGET_COLUMNS,
+    MODEL_TARGET_COLUMN,
+    MODEL_TYPES,
+    _model_artifact_paths,
+    _new_model,
+    _prediction_output_path,
+)
 from .news import (
     _enrich_news_relationships,
     _extract_headline_relationships,
@@ -103,9 +116,15 @@ __all__ = [
     "BATCH_SIZE",
     "FINAL_HOLDOUT_SESSIONS",
     "MODEL_TYPES",
+    "MODEL_TARGETS",
+    "MODEL_TARGET_COLUMNS",
     "FEATURES",
     "PRICE_FEATURES",
     "FUNDAMENTAL_FEATURES",
+    "SECTOR_FEATURES",
+    "VIX_FEATURES",
+    "SECTOR_ETFS",
+    "VIX_TICKER",
     "PRICE_COLUMN_ORDER",
     "PRICE_COLUMNS",
     "FUNDAMENTAL_CONCEPTS",
@@ -117,6 +136,7 @@ __all__ = [
     "build_features",
     "compare_models",
     "compare_all_models",
+    "ablate_fundamental_features",
     "reassess_saved_models",
     "train_model",
     "predict",
